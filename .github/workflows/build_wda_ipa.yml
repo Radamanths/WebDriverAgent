@@ -1,0 +1,117 @@
+name: Build WDA IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_udid:
+        description: 'Device UDID'
+        required: false
+        default: '00008140-001A5D0E2281801C'
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout WDA
+        uses: actions/checkout@v4
+        with:
+          repository: appium/WebDriverAgent
+          ref: v11.4.1
+
+      - name: Install dependencies
+        run: gem install fastlane --no-document
+
+      - name: Setup Xcode
+        run: sudo xcode-select --switch /Applications/Xcode.app
+
+      - name: Get certificate and provisioning profile
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          # Create build keychain
+          security create-keychain -p "buildpass" build.keychain
+          security list-keychains -d user -s build.keychain $(security list-keychains -d user | sed s/\"//g)
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "buildpass" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+
+          # Run fastlane from a separate directory
+          mkdir -p /tmp/fastlane_setup
+          cd /tmp/fastlane_setup
+
+          cat > Fastfile << FASTEOF
+          lane :setup do
+            cert(
+              username: ENV["APPLE_ID"],
+              password: ENV["APPLE_PASSWORD"],
+              keychain_path: "$PWD/../build.keychain",
+              keychain_password: "buildpass",
+              development: true,
+              output_path: "/tmp/fastlane_setup"
+            )
+            sigh(
+              username: ENV["APPLE_ID"],
+              password: ENV["APPLE_PASSWORD"],
+              app_identifier: "com.facebook.WebDriverAgentRunner.xctrunner",
+              development: true,
+              output_path: "/tmp/fastlane_setup",
+              filename: "wda_runner.mobileprovision"
+            )
+            sigh(
+              username: ENV["APPLE_ID"],
+              password: ENV["APPLE_PASSWORD"],
+              app_identifier: "com.facebook.WebDriverAgentRunner",
+              development: true,
+              output_path: "/tmp/fastlane_setup",
+              filename: "wda.mobileprovision"
+            )
+          end
+          FASTEOF
+
+          fastlane setup
+
+          # Install provisioning profiles
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles/
+          cp /tmp/fastlane_setup/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
+          ls ~/Library/MobileDevice/Provisioning\ Profiles/
+
+      - name: Build WDA
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+        run: |
+          # Get team ID from cert
+          TEAM_ID=$(security find-certificate -c "Apple Development" -p build.keychain 2>/dev/null | \
+            openssl x509 -noout -subject 2>/dev/null | \
+            grep -o 'OU=[A-Z0-9]*' | head -1 | cut -d= -f2)
+          echo "Team ID: $TEAM_ID"
+
+          xcodebuild build-for-testing \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="${TEAM_ID}" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "" 2>&1 | tail -50
+
+          APP_PATH=$(find DerivedData -name "WebDriverAgentRunner-Runner.app" -not -path "*.dSYM*" | head -1)
+          echo "Found app: $APP_PATH"
+
+          # Verify xctest signing
+          codesign -dvvv "${APP_PATH}/PlugIns/WebDriverAgentRunner.xctest" 2>&1 | head -20
+
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          zip -r WebDriverAgent.ipa Payload/
+          echo "IPA size: $(du -sh WebDriverAgent.ipa)"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: WebDriverAgent-IPA
+          path: WebDriverAgent.ipa
+          retention-days: 7
