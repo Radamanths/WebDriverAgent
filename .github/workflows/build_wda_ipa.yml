@@ -28,6 +28,8 @@ jobs:
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          FASTLANE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          FASTLANE_DONT_STORE_PASSWORD: "1"
         run: |
           # Create build keychain
           security create-keychain -p "buildpass" build.keychain
