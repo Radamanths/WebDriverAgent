@@ -37,10 +37,10 @@ jobs:
           security set-keychain-settings -lut 21600 build.keychain
 
           # Run fastlane from a separate directory
-          mkdir -p /tmp/fastlane_setup
+          mkdir -p /tmp/fastlane_setup/fastlane
           cd /tmp/fastlane_setup
 
-          cat > Fastfile << FASTEOF
+          cat > fastlane/Fastfile << FASTEOF
           lane :setup do
             cert(
               username: ENV["APPLE_ID"],
