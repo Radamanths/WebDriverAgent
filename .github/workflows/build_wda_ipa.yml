@@ -42,28 +42,31 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           FASTLANE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           FASTLANE_DONT_STORE_PASSWORD: "1"
-          FASTFILE_CONTENT: |
-            lane :setup do
-              cert(
-                username: ENV["APPLE_ID"],
-                keychain_path: ENV["KEYCHAIN_PATH"],
-                keychain_password: "buildpass",
-                development: true,
-                output_path: "/tmp/fl"
-              )
-              sigh(
-                username: ENV["APPLE_ID"],
-                app_identifier: "com.facebook.WebDriverAgentRunner.xctrunner",
-                development: true,
-                output_path: "/tmp/fl",
-                filename: "wda_runner.mobileprovision"
-              )
-            end
         run: |
           export KEYCHAIN_PATH="$(security default-keychain | tr -d ' \")"
 
           mkdir -p /tmp/fl/fastlane
-          printf '%s\n' "$FASTFILE_CONTENT" > /tmp/fl/fastlane/Fastfile
+
+          python3 << 'PYEOF'
+content = """lane :setup do
+  cert(
+    username: ENV["APPLE_ID"],
+    keychain_path: ENV["KEYCHAIN_PATH"],
+    keychain_password: "buildpass",
+    development: true,
+    output_path: "/tmp/fl"
+  )
+  sigh(
+    username: ENV["APPLE_ID"],
+    app_identifier: "com.facebook.WebDriverAgentRunner.xctrunner",
+    development: true,
+    output_path: "/tmp/fl",
+    filename: "wda_runner.mobileprovision"
+  )
+end
+"""
+open('/tmp/fl/fastlane/Fastfile', 'w').write(content)
+PYEOF
 
           cd /tmp/fl && fastlane setup
 
