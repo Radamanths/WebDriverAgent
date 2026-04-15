@@ -49,7 +49,7 @@ jobs:
             echo 'lane :setup do'
             echo '  cert('
             echo '    username: ENV["APPLE_ID"],'
-            echo '    keychain_name: "build",'
+            echo '    keychain_path: ENV["HOME"] + "/Library/Keychains/build.keychain-db",'
             echo '    keychain_password: "buildpass",'
             echo '    development: true,'
             echo '    output_path: "/tmp/fl"'
