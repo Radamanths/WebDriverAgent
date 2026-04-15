@@ -43,15 +43,13 @@ jobs:
           FASTLANE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           FASTLANE_DONT_STORE_PASSWORD: "1"
         run: |
-          export KEYCHAIN_PATH="$(security default-keychain | tr -d ' \")"
-
           mkdir -p /tmp/fl/fastlane
 
           {
             echo 'lane :setup do'
             echo '  cert('
             echo '    username: ENV["APPLE_ID"],'
-            echo '    keychain_path: ENV["KEYCHAIN_PATH"],'
+            echo '    keychain_name: "build",'
             echo '    keychain_password: "buildpass",'
             echo '    development: true,'
             echo '    output_path: "/tmp/fl"'
@@ -71,9 +69,7 @@ jobs:
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles/
           cp /tmp/fl/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
 
-          TEAM_ID=$(security find-certificate -c "Apple Development" -p build.keychain 2>/dev/null | \
-            openssl x509 -noout -subject 2>/dev/null | \
-            grep -o 'OU=[A-Z0-9]*' | head -1 | cut -d= -f2)
+          TEAM_ID=$(security find-certificate -c "Apple Development" -p build.keychain | openssl x509 -noout -subject | grep -o "OU=[A-Z0-9]*" | head -1 | cut -d= -f2)
           echo "Team ID: $TEAM_ID"
           echo "TEAM_ID=$TEAM_ID" >> $GITHUB_ENV
 
