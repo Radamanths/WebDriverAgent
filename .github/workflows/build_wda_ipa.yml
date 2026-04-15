@@ -1,5 +1,233 @@
 name: Build WDA IPA
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Инструкция:
+#
+# 1. Сделай форк репозитория appium/WebDriverAgent на GitHub
+# 2. Скопируй этот файл в .github/workflows/build_wda.yml своего форка
+# 3. Добавь GitHub Secrets (Settings → Secrets → Actions):
+#      APPLE_ID       — твой Apple ID (email)
+#      APPLE_PASSWORD — пароль от Apple ID (или App-Specific Password)
+# 4. Actions → "Build WDA IPA" → Run workflow → вводи UDID своего iPhone
+# 5. Скачай артефакт "WDA-Complete" — там будет всё необходимое:
+#      WebDriverAgent.ipa   → положить в корень проекта
+#      dev_cert.pem         → положить в cert/
+#      dev_key.pem          → положить в cert/
+#      wda_runner.mobileprovision → положить в cert/
+# 6. Запусти python setup_client.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_udid:
+        description: 'Device UDID (твой iPhone, узнать: go-ios list)'
+        required: true
+        default: ''
+      wda_version:
+        description: 'WDA version tag (appium/WebDriverAgent release)'
+        required: false
+        default: 'v11.4.1'
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout WDA
+        uses: actions/checkout@v4
+        with:
+          repository: appium/WebDriverAgent
+          ref: ${{ github.event.inputs.wda_version }}
+
+      - name: Setup Xcode
+        run: sudo xcode-select --switch /Applications/Xcode.app
+
+      - name: Install fastlane
+        run: gem install fastlane --no-document
+
+      - name: Setup keychain
+        run: |
+          security create-keychain -p "buildpass" build.keychain
+          security list-keychains -d user -s build.keychain $(security list-keychains -d user | sed s/\"//g)
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "buildpass" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+
+      - name: Get certificates and provisioning profiles (fastlane)
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          FASTLANE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          FASTLANE_DONT_STORE_PASSWORD: "1"
+        run: |
+          export KEYCHAIN_PATH="$(security default-keychain | tr -d ' \"')"
+
+          mkdir -p /tmp/fl/fastlane
+          cat > /tmp/fl/fastlane/Fastfile << 'EOF'
+lane :setup do
+  cert(
+    username: ENV["APPLE_ID"],
+    keychain_path: ENV["KEYCHAIN_PATH"],
+    keychain_password: "buildpass",
+    development: true,
+    output_path: "/tmp/fl"
+  )
+  sigh(
+    username: ENV["APPLE_ID"],
+    app_identifier: "com.facebook.WebDriverAgentRunner.xctrunner",
+    development: true,
+    output_path: "/tmp/fl",
+    filename: "wda_runner.mobileprovision"
+  )
+end
+EOF
+
+          cd /tmp/fl && fastlane setup
+
+          # Установить profiles
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles/
+          cp /tmp/fl/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
+
+          # Информация о сертификате
+          echo "=== Certificate info ==="
+          security find-certificate -c "Apple Development" -p build.keychain 2>/dev/null | \
+            openssl x509 -noout -subject -dates 2>/dev/null
+
+          # Извлечь Team ID
+          TEAM_ID=$(security find-certificate -c "Apple Development" -p build.keychain 2>/dev/null | \
+            openssl x509 -noout -subject 2>/dev/null | \
+            grep -o 'OU=[A-Z0-9]*' | head -1 | cut -d= -f2)
+          echo "Team ID: $TEAM_ID"
+          echo "TEAM_ID=$TEAM_ID" >> $GITHUB_ENV
+
+          # Найти .p12 который создал fastlane cert
+          P12_FILE=$(ls /tmp/fl/*.p12 2>/dev/null | head -1)
+          echo "P12: $P12_FILE"
+          echo "P12_FILE=$P12_FILE" >> $GITHUB_ENV
+
+      - name: Export PEM files from certificate
+        run: |
+          P12_FILE="${{ env.P12_FILE }}"
+
+          if [ -z "$P12_FILE" ] || [ ! -f "$P12_FILE" ]; then
+            echo "p12 not found via env, searching..."
+            P12_FILE=$(ls /tmp/fl/*.p12 2>/dev/null | head -1)
+          fi
+
+          echo "Using p12: $P12_FILE"
+
+          mkdir -p /tmp/cert_out
+
+          # Извлечь приватный ключ (dev_key.pem)
+          openssl pkcs12 \
+            -in "$P12_FILE" \
+            -nocerts \
+            -nodes \
+            -legacy \
+            -passin pass: \
+            -out /tmp/cert_out/dev_key.pem 2>/dev/null || \
+          openssl pkcs12 \
+            -in "$P12_FILE" \
+            -nocerts \
+            -nodes \
+            -passin pass: \
+            -out /tmp/cert_out/dev_key.pem
+
+          # Извлечь сертификат (dev_cert.pem)
+          openssl pkcs12 \
+            -in "$P12_FILE" \
+            -clcerts \
+            -nokeys \
+            -legacy \
+            -passin pass: \
+            -out /tmp/cert_out/dev_cert.pem 2>/dev/null || \
+          openssl pkcs12 \
+            -in "$P12_FILE" \
+            -clcerts \
+            -nokeys \
+            -passin pass: \
+            -out /tmp/cert_out/dev_cert.pem
+
+          echo "=== Extracted files ==="
+          ls -la /tmp/cert_out/
+          echo "=== dev_cert.pem subject ==="
+          openssl x509 -in /tmp/cert_out/dev_cert.pem -noout -subject -dates
+
+          # Скопировать provisioning profile
+          cp /tmp/fl/wda_runner.mobileprovision /tmp/cert_out/
+
+      - name: Build WDA IPA
+        run: |
+          xcodebuild build-for-testing \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="${{ env.TEAM_ID }}" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "" 2>&1 | tail -100
+
+          APP_PATH=$(find DerivedData -name "WebDriverAgentRunner-Runner.app" \
+            -not -path "*.dSYM*" | head -1)
+          echo "Found app: $APP_PATH"
+
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          zip -r WebDriverAgent.ipa Payload/
+
+          echo "IPA size: $(du -sh WebDriverAgent.ipa)"
+          echo "APP_PATH=$APP_PATH" >> $GITHUB_ENV
+
+      - name: Verify codesign
+        run: |
+          APP_PATH="${{ env.APP_PATH }}"
+          echo "=== Runner app ==="
+          codesign -dvvv "$APP_PATH" 2>&1 | head -15
+          echo "=== xctest plugin ==="
+          codesign -dvvv "$APP_PATH/PlugIns/WebDriverAgentRunner.xctest" 2>&1 | head -15
+
+      - name: Upload IPA + cert files (all-in-one)
+        uses: actions/upload-artifact@v4
+        with:
+          name: WDA-Complete
+          path: |
+            WebDriverAgent.ipa
+            /tmp/cert_out/dev_cert.pem
+            /tmp/cert_out/dev_key.pem
+            /tmp/cert_out/wda_runner.mobileprovision
+          retention-days: 30
+
+      - name: Upload IPA only
+        uses: actions/upload-artifact@v4
+        with:
+          name: WebDriverAgent-IPA
+          path: WebDriverAgent.ipa
+          retention-days: 30
+
+      - name: Print next steps
+        run: |
+          echo ""
+          echo "======================================================"
+          echo "  BUILD COMPLETE"
+          echo "======================================================"
+          echo ""
+          echo "Скачай артефакт 'WDA-Complete' и распакуй:"
+          echo ""
+          echo "  WebDriverAgent.ipa         → корень проекта"
+          echo "  dev_cert.pem               → cert/"
+          echo "  dev_key.pem                → cert/"
+          echo "  wda_runner.mobileprovision → cert/"
+          echo ""
+          echo "Затем запусти:"
+          echo "  python setup_client.py"
+          echo ""
+          echo "Team ID: ${{ env.TEAM_ID }}"
+          echo "======================================================"
+name: Build WDA IPA
+
 on:
   workflow_dispatch:
     inputs:
@@ -18,76 +246,69 @@ jobs:
           repository: appium/WebDriverAgent
           ref: v11.4.1
 
-      - name: Install dependencies
-        run: gem install fastlane --no-document
-
       - name: Setup Xcode
         run: sudo xcode-select --switch /Applications/Xcode.app
 
-      - name: Get certificate and provisioning profile
+      - name: Build and sign WDA
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           FASTLANE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           FASTLANE_DONT_STORE_PASSWORD: "1"
+          MATCH_PASSWORD: ""
         run: |
-          # Create build keychain
+          # Install fastlane
+          gem install fastlane --no-document
+
+          # Create keychain
           security create-keychain -p "buildpass" build.keychain
           security list-keychains -d user -s build.keychain $(security list-keychains -d user | sed s/\"//g)
           security default-keychain -s build.keychain
           security unlock-keychain -p "buildpass" build.keychain
           security set-keychain-settings -lut 21600 build.keychain
 
-          # Run fastlane from a separate directory
-          mkdir -p /tmp/fastlane_setup/fastlane
-          cd /tmp/fastlane_setup
+          # Get cert and provisioning profiles via fastlane
+          mkdir -p /tmp/fl/fastlane
+          cat > /tmp/fl/fastlane/Fastfile << 'EOF'
+lane :setup do
+  cert(
+    username: ENV["APPLE_ID"],
+    keychain_path: ENV["KEYCHAIN_PATH"],
+    keychain_password: "buildpass",
+    development: true,
+    output_path: "/tmp/fl"
+  )
+  sigh(
+    username: ENV["APPLE_ID"],
+    app_identifier: "com.facebook.WebDriverAgentRunner.xctrunner",
+    development: true,
+    output_path: "/tmp/fl",
+    filename: "wda_runner.mobileprovision"
+  )
+  sigh(
+    username: ENV["APPLE_ID"],
+    app_identifier: "com.facebook.WebDriverAgentRunner",
+    development: true,
+    output_path: "/tmp/fl",
+    filename: "wda.mobileprovision"
+  )
+end
+EOF
 
-          cat > fastlane/Fastfile << FASTEOF
-          lane :setup do
-            cert(
-              username: ENV["APPLE_ID"],
-              password: ENV["APPLE_PASSWORD"],
-              keychain_path: "$PWD/../build.keychain",
-              keychain_password: "buildpass",
-              development: true,
-              output_path: "/tmp/fastlane_setup"
-            )
-            sigh(
-              username: ENV["APPLE_ID"],
-              password: ENV["APPLE_PASSWORD"],
-              app_identifier: "com.facebook.WebDriverAgentRunner.xctrunner",
-              development: true,
-              output_path: "/tmp/fastlane_setup",
-              filename: "wda_runner.mobileprovision"
-            )
-            sigh(
-              username: ENV["APPLE_ID"],
-              password: ENV["APPLE_PASSWORD"],
-              app_identifier: "com.facebook.WebDriverAgentRunner",
-              development: true,
-              output_path: "/tmp/fastlane_setup",
-              filename: "wda.mobileprovision"
-            )
-          end
-          FASTEOF
-
-          fastlane setup
+          export KEYCHAIN_PATH="$(security default-keychain | tr -d ' \"')"
+          cd /tmp/fl && fastlane setup
 
           # Install provisioning profiles
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles/
-          cp /tmp/fastlane_setup/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
+          cp /tmp/fl/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
           ls ~/Library/MobileDevice/Provisioning\ Profiles/
 
-      - name: Build WDA
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-        run: |
-          # Get team ID from cert
+          # Get Team ID from installed cert
           TEAM_ID=$(security find-certificate -c "Apple Development" -p build.keychain 2>/dev/null | \
             openssl x509 -noout -subject 2>/dev/null | \
             grep -o 'OU=[A-Z0-9]*' | head -1 | cut -d= -f2)
           echo "Team ID: $TEAM_ID"
 
+          cd $GITHUB_WORKSPACE
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -98,12 +319,10 @@ jobs:
             CODE_SIGN_STYLE=Automatic \
             DEVELOPMENT_TEAM="${TEAM_ID}" \
             -allowProvisioningUpdates \
-            -authenticationKeyPath "" 2>&1 | tail -50
+            -authenticationKeyPath "" 2>&1 | tail -80
 
           APP_PATH=$(find DerivedData -name "WebDriverAgentRunner-Runner.app" -not -path "*.dSYM*" | head -1)
           echo "Found app: $APP_PATH"
-
-          # Verify xctest signing
           codesign -dvvv "${APP_PATH}/PlugIns/WebDriverAgentRunner.xctest" 2>&1 | head -20
 
           mkdir -p Payload
