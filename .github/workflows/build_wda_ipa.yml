@@ -39,7 +39,7 @@ jobs:
 
       - name: Get certificates and provisioning profiles
         env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
+          FASTLANE_USER: ${{ secrets.APPLE_ID }}
           FASTLANE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           FASTLANE_DONT_STORE_PASSWORD: "1"
         run: |
@@ -48,14 +48,12 @@ jobs:
           {
             echo 'lane :setup do'
             echo '  cert('
-            echo '    username: ENV["APPLE_ID"],'
             echo '    keychain_path: ENV["HOME"] + "/Library/Keychains/build.keychain-db",'
             echo '    keychain_password: "buildpass",'
             echo '    development: true,'
             echo '    output_path: "/tmp/fl"'
             echo '  )'
             echo '  sigh('
-            echo '    username: ENV["APPLE_ID"],'
             echo '    app_identifier: "com.facebook.WebDriverAgentRunner.xctrunner",'
             echo '    development: true,'
             echo '    output_path: "/tmp/fl",'
