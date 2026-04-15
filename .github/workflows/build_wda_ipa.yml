@@ -47,26 +47,24 @@ jobs:
 
           mkdir -p /tmp/fl/fastlane
 
-          python3 << 'PYEOF'
-content = """lane :setup do
-  cert(
-    username: ENV["APPLE_ID"],
-    keychain_path: ENV["KEYCHAIN_PATH"],
-    keychain_password: "buildpass",
-    development: true,
-    output_path: "/tmp/fl"
-  )
-  sigh(
-    username: ENV["APPLE_ID"],
-    app_identifier: "com.facebook.WebDriverAgentRunner.xctrunner",
-    development: true,
-    output_path: "/tmp/fl",
-    filename: "wda_runner.mobileprovision"
-  )
-end
-"""
-open('/tmp/fl/fastlane/Fastfile', 'w').write(content)
-PYEOF
+          {
+            echo 'lane :setup do'
+            echo '  cert('
+            echo '    username: ENV["APPLE_ID"],'
+            echo '    keychain_path: ENV["KEYCHAIN_PATH"],'
+            echo '    keychain_password: "buildpass",'
+            echo '    development: true,'
+            echo '    output_path: "/tmp/fl"'
+            echo '  )'
+            echo '  sigh('
+            echo '    username: ENV["APPLE_ID"],'
+            echo '    app_identifier: "com.facebook.WebDriverAgentRunner.xctrunner",'
+            echo '    development: true,'
+            echo '    output_path: "/tmp/fl",'
+            echo '    filename: "wda_runner.mobileprovision"'
+            echo '  )'
+            echo 'end'
+          } > /tmp/fl/fastlane/Fastfile
 
           cd /tmp/fl && fastlane setup
 
